@@ -1,0 +1,7 @@
+gender_palette <- c("#6C43C0", "#24B39C")
+seq02_scale <- c("#EDECE1", "#D2DCC1", "#ABCEA9", "#79C19D", "#24B39C")
+div03_scale_eight <- c("#0BA9D9", "#72BCE0", "#A7CFE6", "#D6E2ED", "#E8E8D5", "#DDE19F", "#CED966", "#BBD215")
+div03_scale_seven <- c("#0BA9D9", "#9BCAE5", "#ECECF0", "#D9DF91", "#BBD215", "#D0DB70", "#BBD215")
+div03_scale_six <- c("#0BA9D9", "#9BCAE5", "#D9DF91", "#BBD215", "#D0DB70", "#BBD215")
+qua_scale_seven <- c("#1D8534", "#D4A91E", "#0093BF", "#5425B3", "#873A86", "#A7BA13", "#8F4D17")
+qua_scale_four_pos_neg <- c("#d64b47", "#1D8534", "#D4A91E", "#5EBD73")

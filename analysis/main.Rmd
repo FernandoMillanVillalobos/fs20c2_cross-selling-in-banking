@@ -1,0 +1,2870 @@
+---
+title: "Cross-Selling: Use Case"
+author: "Fernando Millan Villalobos"
+date: "February 2020"
+output:
+  html_document:
+    code_folding: show
+    echo: TRUE
+    warning: FALSE
+    message: FALSE
+    theme: paper
+    df_print: kable
+    toc: yes
+    toc_depth: 4
+    number_sections: yes
+    toc_float: 
+      collapsed: yes
+      smooth_scroll: false
+knit: (function(inputFile, encoding) {
+  rmarkdown::render(inputFile, encoding = encoding, output_dir = "../", output_file = "index") })
+---
+
+```{r, echo=FALSE}
+# CONFIG
+user_name <- "fernandomillanvillalobos" # your Git username (only needed if
+# you want to deploy to GH pages)
+project_name <- "fs20c2_cross-selling-in-banking" # adapt!
+package_date <- "2020-06-01" # date of the CRAN snapshot that
+# the checkpoint package uses
+r_version <- "4.0.0" # R-Version to use
+options(Ncpus = 4) # use 4 cores for parallelized installation of packages
+if (r_version != paste0(version$major, ".", version$minor)) {
+  stop("ERROR: specified R version does not match currently used.")
+}
+```
+
+# Notes
+
+This report was generated on `r Sys.time()`. R version: `r paste0(version$major, ".", version$minor)` on `r version$platform`. For this report, CRAN packages as of `r package_date` were used.
+
+...
+
+## R-Script & data
+
+The preprocessing and analysis of the data was conducted in the [R project for statistical computing](https://www.r-project.org/). The RMarkdown script used to generate this document and all the resulting data can be downloaded [under this link](http://`r user_name`.github.io/`r project_name`/). Through executing `main.Rmd`, the herein described process can be reproduced and this document can be generated. In the course of this, data from the folder `input` will be processed and results will be written to `output`. The html on-line version of the analysis can be accessed through this [link](https://`r user_name`.github.io/`r project_name`/). 
+
+## GitHub
+
+The code for the herein described process can also be freely downloaded from [https://github.com/`r user_name`/`r project_name`](https://github.com/`r user_name`/`r project_name`). 
+
+## License
+
+...
+
+## Data description of output files
+
+#### `sample_client_dataset.Rdata`
+
+| account_id | client_id | gender | age | age_group | client_type | last_balance | has_cards | cards_lapse_time_months | avg_balance_month_interval (-12) |... 
+|------------|-----------|---------------------------------------------------------------------------------------------|--------------------------------------
+| 65         | 76        | female | 31  | 26-35     | OWNER       | 56145.9      | Y         | 12                      | 600
+
+
+# Set up
+
+```{r, echo=FALSE}
+detach_all_packages <- function() {
+  basic_packages_blank <-  c("stats",
+                             "graphics",
+                             "grDevices",
+                             "utils",
+                             "datasets",
+                             "methods",
+                             "base")
+  basic_packages <- paste("package:", basic_packages_blank, sep = "")
+
+  package_list <- search()[
+    ifelse(unlist(gregexpr("package:", search())) == 1, TRUE, FALSE)]
+
+  package_list <- setdiff(package_list, basic_packages)
+
+  if (length(package_list) > 0)  for (package in package_list) {
+    detach(package, character.only = TRUE, unload = TRUE)
+    print(paste("package ", package, " detached", sep = ""))
+  }
+}
+
+detach_all_packages()
+
+# this allows multiple persons to use the same RMarkdown
+# without adjusting the working directory by themselves all the time
+source("scripts/csf.R")
+path_to_wd <- csf() # if this - for some reason - does not work,
+# replace with a hardcoded path, like so: "~/projects/rddj-template/analysis/"
+if (is.null(path_to_wd) | !dir.exists(path_to_wd)) {
+  print("WARNING: No working directory specified for current user")
+} else {
+  setwd(path_to_wd)
+}
+
+# suppress scientific notation
+options(scipen = 999)
+
+# unload global rstudioapi and knitr again to avoid conflicts with checkpoint
+# this is only necessary if executed within RStudio
+# outside of RStudio, namely in the knit.sh script, this causes RMarkdown
+# rendering to fail, thus should not be executed there
+if (Sys.getenv("RSTUDIO") == "1") {
+  detach_all_packages()
+}
+```
+
+## Define packages
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+# from https://mran.revolutionanalytics.com/web/packages/\
+# checkpoint/vignettes/using-checkpoint-with-knitr.html
+# if you don't need a package, remove it from here (commenting not sufficient)
+# tidyverse: see https://blog.rstudio.org/2016/09/15/tidyverse-1-0-0/
+cat("
+library(rstudioapi)
+library(tidyverse) # ggplot2, dplyr, tidyr, readr, purrr, tibble, magrittr, readxl
+library(scales) # scales for ggplot2
+library(jsonlite) # json
+library(lintr) # code linting
+library(sf) # spatial data handling
+library(rmarkdown)
+library(RPostgreSQL) # sql database
+library(DBI) # database
+library(treemap) # treemap plots
+library(hrbrthemes) # plots
+library(ggridges) # density plots
+library(cowplot) # theme
+library(extrafont)", # fonts
+file = "manifest.R")
+```
+
+## Install packages
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+# if checkpoint is not yet installed, install it (for people using this
+# system for the first time)
+if (!require(checkpoint)) {
+  if (!require(devtools)) {
+    install.packages("devtools", repos = "http://cran.us.r-project.org")
+    require(devtools)
+  }
+  devtools::install_github("RevolutionAnalytics/checkpoint",
+                           ref = "v0.4.9", # could be adapted later,
+                           # as of now (beginning of July 2017
+                           # this is the current release on CRAN)
+                           repos = "http://cran.us.r-project.org")
+  require(checkpoint)
+}
+# nolint start
+if (!dir.exists("~/.checkpoint")) {
+  dir.create("~/.checkpoint")
+}
+# nolint end
+# install packages for the specified CRAN snapshot date
+checkpoint(snapshotDate = package_date,
+           project = path_to_wd,
+           verbose = T,
+           scanForPackages = T,
+           use.knitr = F,
+           R.version = r_version)
+rm(package_date)
+```
+
+## Load packages
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+source("manifest.R")
+unlink("manifest.R")
+sessionInfo()
+```
+
+## Load additional scripts
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+# if you want to outsource logic to other script files, see README for 
+# further information
+# Load all visualizations functions as separate scripts
+knitr::read_chunk("scripts/dviz.supp.R")
+source("scripts/dviz.supp.R")
+knitr::read_chunk("scripts/themes.R")
+source("scripts/themes.R")
+knitr::read_chunk("scripts/plot_grid.R")
+source("scripts/plot_grid.R")
+knitr::read_chunk("scripts/align_legend.R")
+source("scripts/align_legend.R")
+knitr::read_chunk("scripts/label_log10.R")
+source("scripts/label_log10.R")
+knitr::read_chunk("scripts/colors.R")
+source("scripts/colors.R")
+```
+
+## Connection
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+
+DB_HOST='server2053.cs.technik.fhnw.ch' # or 86.119.36.94 depending on the network
+DB_PORT = 5432
+DB_DBNAME = 'bank_db' # or 'warenkorb_db'
+DB_USERNAME = 'db_user'
+DB_PASSWORD = 'db_user_pw'
+# load the PostgreSQL driver
+drv <- dbDriver("PostgreSQL")
+# connect to the database
+con <- dbConnect(drv, dbname = DB_DBNAME,
+                 host = DB_HOST, port = DB_PORT,
+                 user = DB_USERNAME, password = DB_PASSWORD)
+
+```
+
+## Customization
+### Theme
+
+```{r}
+theme_set(theme_cowplot(font_size = 11))
+```
+
+# Data Importing and Pre-Processing
+
+## Relation disposition {-}
+
+Import the relation disposition (disp), within each record relates together a client with an account.
+
+```{sql connection=con, output.var="disp"}
+SELECT * 
+FROM 
+  disp
+```
+
+Transform the imported dataframe as tibble to work easier with dplyr
+
+```{r}
+disp <- as_tibble(disp)
+disp
+```
+
+Check if the table was correct imported (every object and every variable).
+
+```{r}
+nrow(disp)
+ncol(disp)
+```
+
+Run str() to identify variable types and identify problems.
+
+```{r}
+str(disp)
+```
+
+From the analysis of the structure of the relation we can see that, although we have three integer variables, all of them are categorical variable measured in a nominal scale. They have no particular order and don't represent quantitative values. The variable type refers to a categorical level, so it was parsed as Factor.
+
+Check if there are NA´s.
+
+```{r}
+sum(is.na(disp))
+```
+
+Look at the top and the bottom of our data to let us know if the data were read properly, properly formatted and that everything is there. Looking at the tail is particulary useful because often there will be some problem like weird formatting or some extra comment lines reading the end of a data set.
+
+```{r}
+head(disp)
+tail(disp)
+```
+
+Make a new cleansed data set from the original to work with.
+
+```{r}
+dispOK <- disp
+```
+
+The table disp connects account and client (i.e. a many-to-many relation between client and account through the disp table). Look at the unique values for every variable (column).
+
+```{sql connection=con}
+SELECT
+   COUNT(*) as total_count,
+   COUNT(DISTINCT client_id) as client_count, 
+   COUNT(DISTINCT account_id) as account_count
+FROM
+   disp
+```
+
+After running the code we can see that there is the same number of client_id and dispOK_id (5369) but not for account_id (4500). Based on this we can assume that each client has exactly one account even thought the datamodel would allow for clients having from 0..m accounts (it is a many-to-many relation between client and account through the disp table). At the same time we know that some accounts are owned by more than one client.
+
+The most interesting characteristic for a categorical variable is the frequency of his values. We focus our attention in the account type variable (type). We want to know how many accounts clients own.
+
+```{sql connection=con}
+SELECT
+   STRING_AGG(client_id::text, '+') as clients,
+   STRING_AGG(type, '+') as types,
+   account_id,
+   COUNT(account_id) as count
+FROM
+   disp 
+GROUP BY
+   account_id 
+ORDER BY
+       count DESC,
+   account_id
+   LIMIT 5
+```
+
+Lets see how many accounts have 2 and how many have 1 clients.
+
+```{sql connection=con, output.var="accounts_table"}
+SELECT
+   STRING_AGG(DISTINCT types, '+') as types,
+   count,
+   COUNT(count) as counted_counts 
+FROM
+   (
+      SELECT
+         STRING_AGG(type, '+') as types,
+         account_id,
+         COUNT(account_id) as count 
+      FROM
+         disp 
+      GROUP BY
+         account_id 
+      ORDER BY
+         count DESC
+   )
+   as counts_table 
+GROUP BY
+   count
+```
+
+
+```{r}
+pct_accounts <-  accounts_table %>% 
+  mutate(freq = counted_counts / sum(counted_counts), pct = round((freq*100), 0))
+pct_accounts
+```
+
+Together we have exactly 869 + 3631 = 4500 distinct accounts in disp (which is equal to the number of accounts). From the total number of accounts that we have, 81% of them are OWNERS and the remained 19% are OWNER+DISPONENT.
+
+```{sql connection=con, output.var="clients_table"}
+SELECT
+   STRING_AGG(DISTINCT types, '+') as types,
+   count,
+   SUM(count) as summed_counts
+FROM
+   (
+      SELECT
+         STRING_AGG(type, '+') as types,
+         account_id,
+         COUNT(account_id) as count 
+      FROM
+         disp 
+      GROUP BY
+         account_id 
+      ORDER BY
+         count DESC
+   )
+   as counts_table 
+GROUP BY
+   count
+```
+
+```{r }
+pct_clients <-  clients_table %>% 
+  mutate(freq = summed_counts / sum(summed_counts), pct = round((freq*100), 0))
+pct_clients
+```
+
+Together we reference exactly 1738 + 3631 = 5369 accounts through disp (this also counts multi occurences of the same account - which is equal to the number of clients). We found that 68% of our clients are OWNERS and 32% OWNER+DISPONENT.
+
+## Relation demographie {-}
+
+Import the relation district (district), each record describes demographic characteristics of a district. Because it is difficult to identify the variables by the original names, we are going to rename the columns with new ones that describe which information the variables hold.
+
+```{sql connection=con, output.var="district"}
+SELECT 
+  a1 as district_code, 
+  a2 as district_name, 
+  a3 as region, 
+  a4 as population, 
+  a5 as pop_499_or_less, 
+  a6 as pop_500_1999, 
+  a7 as pop_2000_9999, 
+  a8 as pop_10000_or_more, 
+  a9 as city_number, 
+  a10 as ratio_urban_population, 
+  a11 as average_salary, 
+  a12 as unemployment_1995, 
+  a13 as unemployment_1996,
+  a14 as enterpreneurs_per_100, 
+  a15 as crimes_1995, 
+  a16 as crimes_1996
+FROM district
+```
+
+```{r}
+head(district)
+```
+
+Transform the imported dataframe as tibble to work easier with dplyr.
+
+```{r}
+district <- as_tibble(district)
+```
+
+Check if the table was correct imported (every object and every variable)
+
+```{r}
+nrow(district)
+ncol(district)
+```
+
+Run str() to identify variable types and identify problems.
+
+```{r}
+str(district)
+```
+
+Transform categorical variables (district_name and region) as Factor.
+
+```{r}
+district$district_name <- as.factor(district$district_name)
+district$region <- as.factor(district$region)
+```
+
+Add a new column with the abbreviation codes (ISO 3166-2) for each region for visualization purpose.
+
+```{r}
+iso <- district$region %>% 
+  fct_recode(
+              "CST" = "central Bohemia",
+              "CVC" = "east Bohemia",
+              "CSC" = "north Bohemia",
+              "CSM" = "north Moravia",
+              "PRG" = "Prague",
+              "CJC" = "south Bohemia",
+              "CJM" = "south Moravia",
+              "CZC" = "west Bohemia"
+            )
+district <- add_column(district, iso)
+```
+
+Using the built-in function summary allows us to check if there are NA´s, locate them and get basic statistical information about the data set.
+
+```{r}
+sum(is.na(district))
+summary(district)
+```
+
+From summary we found that there are two variables (unemployment_1995 and crimes_1995) that have a couple of missing values. We are goint to get rid of them to avoid problems when plotting.
+
+```{r}
+district <- drop_na(district)
+summary(district)
+```
+
+Look at the top and the bottom of our data.
+
+```{r}
+head(district)
+tail(district)
+```
+
+Make a new cleansed data set from the original to work with.
+
+```{r}
+districtOK <- district
+```
+
+
+```{r}
+head(district)
+```
+
+## Relation loan {-}
+
+Import the relation loan (loan), within each record describes a loan granted for a given account. We have  a new variable that explain the meaning of the differents loan statuses ("status").
+
+```{sql connection=con, output.var="loan"}
+SELECT *,
+CASE
+ WHEN status = 'A' THEN 'finished, no problems'
+ WHEN status = 'B' THEN 'finished, loan not payed'
+ WHEN status = 'C' THEN 'running contract, OK so far'
+ WHEN status = 'D' THEN 'running contract, client in debt'
+ ELSE 'frequency'
+END as freqStatement
+FROM loan
+```
+
+```{r}
+head(loan)
+```
+
+Transform the imported dataframe as tibble to work easier with dplyr.
+
+```{r}
+loan <- as_tibble(loan)
+```
+
+Check if the table was correct imported (every object and every variable).
+
+```{r}
+nrow(loan)
+ncol(loan)
+```
+
+Run str() to identify variable types and identify problems.
+
+```{r}
+str(loan)
+```
+
+Check if there are NA´s.
+
+```{r}
+sum(is.na(loan))
+```
+
+Look at the top and the bottom of our data.
+
+```{r}
+head(loan)
+tail(loan)
+```
+
+Make a new cleansed data set from the original to work with.
+
+```{r}
+loanOK <- loan
+```
+
+```{r}
+head(loanOK)
+```
+
+Summarized some statistical data.
+
+```{r}
+summary(loanOK)
+```
+
+## Relation order {-}
+
+Import the relation order (order), within - each record describes characteristics of a payment order. The meaning of the different payment categories were  in a new column ("payment_category") which replace the original one ("k_symbol").
+
+```{sql connection=con, output.var="order"}
+SELECT orders_id, account_id, bank_to, account_to, amount,
+CASE
+  WHEN k_symbol = 'POJISTNE' THEN 'insurance payment'
+  WHEN k_symbol = 'SIPO' THEN 'household'
+  WHEN k_symbol = 'LEASING' THEN 'leasing'
+  WHEN k_symbol = 'UVER' THEN 'loan payment'
+  ELSE 'other'
+END as payment_category
+FROM orders
+```
+
+```{r}
+head(order)
+```
+
+Transform the imported dataframe as tibble to work easier with dplyr.
+
+```{r}
+order <- as_tibble(order)
+```
+
+Check if the table was correct imported (every object and every variable).
+
+```{r}
+nrow(order)
+ncol(order)
+```
+
+Run str() to identify variable types and identify problems.
+
+```{r}
+str(order)
+```
+
+Check if there are NA´s.
+
+```{r}
+sum(is.na(order))
+```
+
+Look at the top and the bottom of our data.
+
+```{r}
+head(order)
+tail(order)
+```
+
+Make a new cleansed data set from the original to work with.
+
+```{r}
+orderOK <- order
+```
+
+```{r}
+head(orderOK)
+```
+
+Look at some statistical data.
+
+```{r}
+summary(orderOK)
+```
+
+## Relation client {-}
+
+Import the relation client (client), each record describes characteristics of a client. The attribute birth_number of the table client has the format "YYMMDD" (year|month|day) and encodes the gender in the month (+50 for females). In order to determine the gender we need to extract MM part from a 6 digit integer (having the format YYMMDD). In case this number is in the range 01..12 the person a male and if it is in the range 51..62 the person is a female (this can be simplified by just saying if this number is bigger than 50 the person is a female). From these artithmetics operations we can extract the new variables age ("age") and gender ("gender").
+
+```{sql connection=con, output.var="client"}
+SELECT client_id, district_id, birth_number,
+       CASE
+         WHEN MOD(birth_number / 100, 100) > 50 THEN To_date(
+         To_char(( birth_number
+                   - 5000 + 19000000 ), '99999999'), 'YYYYMMDD')
+         ELSE To_date(To_char(birth_number + 19000000, '99999999'), 'YYYYMMDD')
+       END as birth_date,
+       CASE
+         WHEN MOD(birth_number / 100, 100) > 50 THEN 'female'
+         ELSE 'male'
+       END as gender,
+       CASE
+         WHEN MOD(birth_number / 100, 100) > 50 THEN Age(
+         '1998-12-31 00:00:00' :: timestamp, To_date(To_char(( birth_number - 5000 + 19000000), '99999999'), 'YYYYMMDD'))
+         ELSE Age('1998-12-31 00:00:00' :: timestamp, To_date(
+                     To_char(birth_number + 19000000, '99999999'), 'YYYYMMDD'))
+       END as age_years,
+       Extract(YEAR from (age ('1998-12-31',
+               to_date(to_char(19000000 + CASE
+             WHEN (CASE  WHEN MOD(birth_number / 100, 100) > 50 THEN 'female'
+             ELSE 'male' END)  = 'female' THEN birth_number - 5000
+             ELSE birth_number
+             END,'99999999' ), 'YYYYMMDD')))) age
+FROM client
+```
+
+
+```{r}
+head(client)
+```
+
+Transform the imported dataframe as tibble to work easier with dplyr.
+
+```{r}
+client <- as_tibble(client)
+```
+
+Now we want to check again if the total count of female and male clients is the amount that we already know from the disp relation (5369).
+
+```{r}
+counted_clients <- count(client, client$gender)
+pct_client_gender <-  counted_clients %>%
+  mutate(freq = n / sum(n), pct = round((freq*100), 0))
+names(pct_client_gender)[1] <- "gender"
+pct_client_gender
+```
+
+Together we have exactly 2645 + 2724 = 5369 distinct clients in client. Females (49%) and males (51%) clients are almost equally distributed.
+
+Check if the table was correct imported (every object and every variable).
+
+```{r}
+nrow(client)
+ncol(client)
+```
+
+Run str() to identify variable types and identify problems.
+
+```{r}
+str(client)
+```
+
+Check if there are NA´s.
+
+```{r}
+sum(is.na(client))
+```
+
+Make a new cleansed data set from the original to work with.
+
+```{r}
+clientOK <- client
+```
+
+```{r}
+head(clientOK)
+```
+
+## Relation card {-}
+
+Import the relation card (card), each record describes a credit card issued to an account.
+
+```{sql connection=con, output.var="card"}
+SELECT * 
+FROM 
+  card
+```
+
+Transform the imported dataframe as tibble to work easier with dplyr.
+
+```{r}
+card <- as_tibble(card)
+```
+
+Check if the table was correct imported (every object and every variable).
+
+```{r}
+nrow(card)
+ncol(card)
+```
+
+Run str() to identify variable types and identify problems.
+
+```{r}
+str(card)
+```
+
+Check if there are NA´s.
+
+```{r}
+sum(is.na(card))
+```
+
+Make a new cleansed data set from the original to work with.
+
+```{r}
+cardOK <- card
+```
+
+
+```{r}
+head(cardOK)
+```
+
+## Relation trans {-}
+
+Import the relation transaction (trans), each record describes one transaction on an account. For operation and k_symbol we have translated the values.
+
+```{sql connection=con, output.var="trans"}
+SELECT *,
+  CASE
+     WHEN TYPE = 'PRIJEM' THEN 'credit'
+     WHEN TYPE = 'VYDAJ' THEN 'withdrawal'
+     ELSE 'NA'
+  END as transact,
+  CASE
+     WHEN operation = 'VYBER KARTOU' THEN 'credit card withdrawal'
+     WHEN operation = 'VKLAD' THEN 'credit in cash'
+     WHEN operation = 'PREVOD Z UCTU' THEN 'collection from another bank'
+     WHEN operation = 'VYBER' THEN 'withdrawal in cash'
+     WHEN operation = 'PREVOD NA UCET' THEN 'remittance to another bank'
+     ELSE 'NA'
+  END as trans_mode,
+  CASE
+     WHEN k_symbol = 'POJISTNE' THEN 'payment insurance'
+     WHEN k_symbol = 'SLUZBY' THEN 'payment statement'
+     WHEN k_symbol = 'UROK' THEN 'credit interest'
+     WHEN k_symbol = 'SANKC. UROK' THEN 'neg interest saction'
+     WHEN k_symbol = 'SIPO' THEN 'household'
+     WHEN k_symbol = 'DUCHOD' THEN 'old-age pension'
+     WHEN k_symbol = 'UVER' THEN 'payment loan'
+     ELSE 'NA'
+  END as trans_type
+FROM trans
+```
+
+
+```{r}
+head(trans)
+```
+
+Transform the imported dataframe as tibble to work easier with dplyr.
+
+```{r}
+trans <- as_tibble(trans)
+```
+
+Check if the table was correct imported (every object and every variable).
+
+```{r}
+nrow(trans)
+ncol(trans)
+```
+
+Run str() to identify variable types and identify problems.
+
+```{r}
+str(trans)
+```
+
+Check if there are NA´s.
+
+```{r}
+sum(is.na(trans))
+```
+
+We can see that there is a large amount of missing values in this particulary data set. Now we want to locate them.
+
+```{r}
+trans %>%
+  select(everything()) %>% 
+  summarise_all(funs(sum(is.na(.))))
+```
+
+Althoug we know that a large amount of NA's could be a problem when we conduct further analysis, we decide to consolidate a new data as an R object from the original to work with.
+
+```{r}
+transOK <- trans
+```
+
+And as we did before, we are going to look at some interesting numerical variables to get a sense of them.
+
+```{r}
+summary(transOK)
+```
+
+From this relation we find particulary interesting for our further data analysis to get an overview of the variable balance. This column give us information about the assets of our clients.
+
+# Exploratory Data Analysis (EDA)
+
+## Gender and Age {-}
+
+From our preliminary analysis, we already know the gender distribution (nominal values) of our clients. Now we want to add the variable age to our analysis, split our distribution in different meaningfull age groups and see how many clients fall into each group depend on if it is a man or woman. That will allow us to understand better the role of these two important demographics variables (age and gender) in our data set. In order to bin properly our age distribution, we begin looking at the range and plotting the distribution.
+
+```{r }
+range(clientOK$age)
+```
+
+```{r }
+p <- ggplot(clientOK, aes(x = age, fill = gender, color = gender))
+p +
+  geom_line(stat = "density", lwd = 1) +
+  scale_x_continuous(breaks = seq(10, 90, 10)) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = TRUE, scale = 1000)) +
+  theme(legend.position = "right", ) +
+  scale_color_manual(name = "Gender", values = gender_palette) +
+  labs(y = "Density (in percentage format)", x = "Age (years)", title = "Clients Gender/Age Distribution", subtitle = "")
+```
+
+From the density plot we can see that most clients are between 18 and 63 years old. At the right end of this kind of distorted lighted skewed normal curve there is although a noteworthy group of older clients that we must have into account. 
+
+We double check what we have seen in the plot looking closer at the figures.
+
+```{r }
+clients_age_bin <- clientOK %>%
+  mutate(age_bins = cut(x = age, breaks = c(10, 18, 25, 35, 45, 55, 65, 75, 88))) %>%
+  group_by(age_bins) %>%
+  summarise(age_bins_count = n())
+clients_age_bin
+```
+
+With this information on our hands, we can now build proper bins for our age distribution.
+
+```{sql connection=con, output.var='gender_age_dataset'}
+SELECT 
+  new_client.gender, 
+  new_client.age_group
+FROM (
+      SELECT 
+        CASE
+          WHEN (MOD(client.birth_number / 100, 100) > 50) THEN 'female'
+          ELSE 'male'
+        END as gender,
+        CASE
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 25) THEN '<25'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 35) THEN '26-35'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 45) THEN '36-45'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 55) THEN '46-55'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 65) THEN '56-65'
+        ELSE '65+'
+        END as age_group,
+         client.client_id
+      FROM client
+    ) new_client
+```
+
+
+```{r}
+head(gender_age_dataset)
+```
+
+```{r}
+p <- ggplot(gender_age_dataset, aes(x = age_group, fill = gender))
+p +
+  geom_bar(position = "dodge2") +
+  theme(legend.position = "right") +
+  labs(x = 'Age Group (years)', y = 'Number of Clients', fill ='', title = "Count of Clients per Age Group and Gender", subtitle = paste("Total:", pct_client_gender$n[1] + pct_client_gender$n[2], ";" , "Women:", pct_client_gender$n[1], ";", "Men:", pct_client_gender$n[2])) +
+  scale_fill_manual(values = gender_palette)
+```
+
+The most of our clients are between 25 and 55 years old. They are almost equally distributed per gender.
+
+## Card details {-}
+
+Next we want to focus our attention in one of the products that the bank offers to his clients: credit cards. We are going to use again our gender/age demographic variables to carry out our analysis of the credit card relation.
+
+As before, first we want to know how the age distribution of our clients with a credit card looks.
+
+```{sql connection=con, output.var='clients_cards_dataset_age_distribution'}
+SELECT DISTINCT client.client_id, district_id, birth_number,
+       CASE
+         WHEN MOD(birth_number / 100, 100) > 50 THEN To_date(
+         To_char(( birth_number
+                   - 5000 + 19000000 ), '99999999'), 'YYYYMMDD')
+         ELSE To_date(To_char(birth_number + 19000000, '99999999'), 'YYYYMMDD')
+       END as birth_date,
+       CASE
+         WHEN MOD(birth_number / 100, 100) > 50 THEN 'female'
+         ELSE 'male'
+       END as gender,
+       CASE
+         WHEN MOD(birth_number / 100, 100) > 50 THEN Age(
+         '1998-12-31 00:00:00' :: timestamp, To_date(To_char(( birth_number - 5000 + 19000000), '99999999'), 'YYYYMMDD'))
+         ELSE Age('1998-12-31 00:00:00' :: timestamp, To_date(
+                     To_char(birth_number + 19000000, '99999999'), 'YYYYMMDD'))
+       END as age_years,
+       Extract(YEAR from (age ('1998-12-31',
+               to_date(to_char(19000000 + CASE
+             WHEN (CASE  WHEN MOD(birth_number / 100, 100) > 50 THEN 'female'
+             ELSE 'male' END)  = 'female' THEN birth_number - 5000
+             ELSE birth_number
+             END,'99999999' ), 'YYYYMMDD')))) age
+FROM client
+JOIN disp ON client.client_id = disp.client_id
+JOIN card ON disp.disp_id = card.disp_id
+```
+
+```{r}
+head(clients_cards_dataset_age_distribution)
+```
+
+```{r}
+p <- ggplot(clients_cards_dataset_age_distribution, aes(x = age, fill = gender, color = gender))
+p +
+  geom_line(stat = "density", lwd = 1) +
+  scale_x_continuous(breaks = seq(10, 90, 10)) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = TRUE, scale = 1000)) +
+  theme(legend.position = "right") +
+  labs(y ="Density (in percentage format)", x = "Age (years)", title = "Age Distribution for Clients with Cards") +
+  scale_color_manual(name = "Gender", values = gender_palette)
+```
+
+```{r }
+card_age_bin <- clients_cards_dataset_age_distribution %>%
+  mutate(age_bins = cut(x = age, breaks = c(10, 18, 25, 35, 45, 55, 65, 75, 88))) %>%
+  group_by(age_bins) %>%
+  summarise(age_bins_count = n())
+card_age_bin
+```
+
+Both plot and summarized figures show us that credit card owners over 65 years old are an exception.
+
+Let´s put all together, card ownership, gender and age groups, to have an overview of the product credit cards.
+
+```{sql connection=con, output.var='clients_cards_dataset'}
+SELECT 
+  new_client.client_id,
+  new_client.gender, 
+  new_client.age_group,
+  card.issued,
+CASE COUNT(card.card_id)
+   WHEN 0 then 'N'
+   ELSE 'Y'
+   END as has_cards
+FROM 
+  (
+    SELECT client.client_id,
+      CASE
+        WHEN (MOD(client.birth_number / 100, 100) > 50) THEN 'female'
+        ELSE 'male'
+      END as gender,
+        CASE
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 25) THEN '<25'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 35) THEN '26-35'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 45) THEN '36-45'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 55) THEN '46-55'
+        ELSE '55-65'
+        END as age_group,
+      client.district_id
+FROM client) new_client
+JOIN disp ON new_client.client_id = disp.client_id
+LEFT JOIN card ON disp.disp_id = card.disp_id
+GROUP BY 
+new_client.client_id,
+new_client.gender,
+new_client.age_group,
+card.issued
+ORDER BY new_client.client_id
+```
+
+```{r}
+head(clients_cards_dataset)
+```
+
+```{r}
+clients_cards_summarized <- clients_cards_dataset %>% 
+  group_by(has_cards) %>%
+  summarize(N = n()) %>%
+  mutate(freq = N / sum(N), pct = round((freq*100), 0))
+clients_cards_summarized
+```
+
+Some simple summarized statistis let us know that most clients don´t own a credit card (4477/83%). 
+
+Let´s focus now on the ones they have this product (892/17%).
+
+```{r}
+clients_with_cards <- clients_cards_dataset %>% 
+  filter(has_cards == 'Y') %>% 
+  group_by(age_group) %>%
+  summarize(N = n()) %>%
+  mutate(freq = N / sum(N), pct = round((freq*100), 0))
+clients_with_cards
+```
+
+```{r}
+p <- ggplot(clients_with_cards, aes(x = age_group, y = pct, fill = pct))
+p +
+  geom_bar(position = "dodge2", stat = "identity") +
+  scale_y_continuous(labels = scales::percent_format(accuracy = TRUE, scale = 1)) +
+  theme(legend.position = "top") +
+  labs(x = 'Age Group',y = 'Percentage of Clients', fill = '', title = "Clients with Cards", subtitle = paste("Total:", clients_cards_summarized$N[2])) +
+  guides(fill = FALSE)
+```
+
+The main group of our clients that are card owners are the youngest one, <25, and the middle age group, 46-55. It seems that clients over 65 years old don´t benefit from this product. 
+
+```{r}
+clients_without_cards <- clients_cards_dataset %>% 
+  filter(has_cards == 'N') %>% 
+  group_by(age_group) %>%
+  summarize(N = n()) %>%
+  mutate(freq = N / sum(N), pct = round((freq*100), 0))
+clients_without_cards
+```
+
+```{r}
+p <- ggplot(clients_without_cards, aes(x = age_group, y = pct, fill = pct, labels = pct))
+p +
+  geom_bar(position = "dodge2", stat = "identity") +
+  scale_y_continuous(labels = scales::percent_format(accuracy = TRUE, scale = 1)) +
+  theme(legend.position = "top") +
+  labs(x = 'Age Group',y = 'Percentage of Clients', fill ='', title = "Clients without Cards", subtitle = paste("Total:", clients_cards_summarized$N[1])) +
+  guides(fill = FALSE)
+```
+
+As we know, credit cards are one of the most interesting (profitable) products for banking business. It makes sense to find out the timeline (in months) for an ordinary client since he/she became our customer until he/she purchased a credit card for the first time.
+
+```{sql connection=con, output.var='clients_cards_account_dataset'}
+SELECT 
+  new_client.client_id,
+  new_client.gender, 
+  new_client.age_group,
+  ROUND(CAST((card.issued - account.date) as decimal) / 30)  as lapse_time_months
+FROM 
+  (
+    SELECT client.client_id,
+      CASE
+        WHEN (MOD(client.birth_number / 100, 100) > 50) THEN 'female'
+        ELSE 'male'
+      END as gender,
+        CASE
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 25) THEN '<25'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 35) THEN '26-35'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 45) THEN '36-45'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 55) THEN '46-55'
+        ELSE '55-65'
+        END as age_group,
+      client.district_id
+FROM client) new_client
+JOIN disp ON new_client.client_id = disp.client_id
+JOIN card ON disp.disp_id = card.disp_id
+JOIN account ON account.account_id = disp.account_id
+ORDER BY age_group
+```
+
+```{r}
+head(clients_cards_account_dataset)
+```
+
+```{r}
+p <- ggplot(clients_cards_account_dataset, aes(x = lapse_time_months, fill = age_group, color = age_group))
+p +
+  geom_line(stat = "density", lwd = 1) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = TRUE, scale = 1000)) +
+  labs(x = 'Months until Card issued',y = 'Percentage of Clients with Credit Card', title = "Card issuing Timeline", subtitle = paste("Mean(black):", round(mean(clients_cards_account_dataset$lapse_time_months)), "months;", "Median(blue):", median(clients_cards_account_dataset$lapse_time_months), "months")) +
+  geom_vline(aes(xintercept = mean(lapse_time_months)),col = 'black', linetype = "dashed", size = 0.5, alpha = .3) +
+  geom_vline(aes(xintercept = median(lapse_time_months)),col = 'blue', linetype = "dashed", size = 0.5, alpha = .5) +
+  facet_wrap(~ age_group, scales = "free") +
+  scale_color_manual(values = qua_scale_seven) +
+  guides(colour = FALSE)
+```
+
+The most clients purchase their credit card for the first time within the first thirty months (mean: black line; median: blue line). Regarding the age groups, clients beneath 25 years old wait no longer than a year an a half till they get their cards.
+
+## Loan details {-}
+
+Looking at another product that is interesting for our cross-selling strategy, we focus on variables like the current status, the amount and the timeframe (date and duration) of these loans.
+
+As before, we begin looking at and adjusting accordingly the age distribution.
+
+```{sql connection=con, output.var='loan_details_dataset_age_distribution'}
+SELECT DISTINCT client.client_id, birth_number,
+       CASE
+         WHEN MOD(birth_number / 100, 100) > 50 THEN To_date(
+         To_char(( birth_number
+                   - 5000 + 19000000 ), '99999999'), 'YYYYMMDD')
+         ELSE To_date(To_char(birth_number + 19000000, '99999999'), 'YYYYMMDD')
+       END as birth_date,
+       CASE
+         WHEN MOD(birth_number / 100, 100) > 50 THEN 'female'
+         ELSE 'male'
+       END as gender,
+       CASE
+         WHEN MOD(birth_number / 100, 100) > 50 THEN Age(
+         '1998-12-31 00:00:00' :: timestamp, To_date(To_char(( birth_number - 5000 + 19000000), '99999999'), 'YYYYMMDD'))
+         ELSE Age('1998-12-31 00:00:00' :: timestamp, To_date(
+                     To_char(birth_number + 19000000, '99999999'), 'YYYYMMDD'))
+       END as age_years,
+       Extract(YEAR from (age ('1998-12-31',
+               to_date(to_char(19000000 + CASE
+             WHEN (CASE  WHEN MOD(birth_number / 100, 100) > 50 THEN 'female'
+             ELSE 'male' END)  = 'female' THEN birth_number - 5000
+             ELSE birth_number
+             END,'99999999' ), 'YYYYMMDD')))) age
+FROM client
+JOIN disp ON client.client_id = disp.client_id
+JOIN account ON disp.account_id = account.account_id
+JOIN loan ON account.account_id = loan.account_id
+```
+
+```{r}
+head(loan_details_dataset_age_distribution)
+```
+
+```{r}
+p <- ggplot(loan_details_dataset_age_distribution, aes(x = age, fill = gender, color = gender))
+p +
+  geom_line(stat = "density", lwd = 1) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = TRUE, scale = 1000)) +
+  scale_x_continuous(breaks = seq(10, 90, 10)) +
+  theme(legend.position = "right") +
+  scale_color_manual(name = "Gender", values = gender_palette) +
+  labs(y = "Density (in percentage format)", x = "Age (years)", title = "Age Distribution for Clients with Loans")
+```
+
+```{r}
+loan_age_bin <- loan_details_dataset_age_distribution %>%
+  mutate(age_bins = cut(x = age, breaks = c(10, 18, 25, 35, 45, 55, 65))) %>%
+  group_by(age_bins) %>%
+  summarise(age_bins_count = n())
+loan_age_bin
+```
+
+```{sql connection=con, output.var="loan_details_dataset"}
+SELECT DISTINCT
+  loan_id,
+  loan.account_id,
+  loan.date as loan_date,
+  amount as loan_amount,
+  duration,
+  payments as monthly_payment,
+  ROUND(CAST((loan.date - account.date) as decimal) / 30)  as lapse_time_months,
+  CASE
+    WHEN status ='A' THEN 'finished, no problems'
+    WHEN status ='B' THEN 'finished, loan not payed'
+    WHEN status ='C' THEN 'running contract, OK so far'
+    WHEN status ='D' THEN 'running contract, client in debt'
+    END as "loan_status",
+        CASE
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 25) THEN '<25'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 35) THEN '26-35'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 45) THEN '36-45'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 55) THEN '46-55'
+        ELSE '55-65'
+        END as age_group
+FROM loan
+JOIN account ON loan.account_id=account.account_id
+JOIN disp ON account.account_id=disp.account_id
+JOIN client ON disp.client_id=client.client_id
+WHERE disp.type = 'OWNER'
+ORDER BY loan_amount desc
+```
+
+```{r}
+head(loan_details_dataset)
+```
+
+```{r}
+loan_details_status <- loan_details_dataset %>% 
+  group_by(loan_status) %>%
+  summarize(N = n()) %>%
+  mutate(freq = N / sum(N), pct = round((freq*100), 0))
+loan_details_status
+```
+
+```{r }
+loan_details_arranged <- loan_details_status %>% 
+  arrange(pct) %>% 
+  mutate(loan_status = factor(loan_status, levels =loan_status))
+
+p <- ggplot(loan_details_arranged, aes(x = loan_status, y = pct, fill = loan_status))
+p +
+  geom_bar(stat = "identity") +
+  scale_y_continuous(labels = scales::percent_format(accuracy = TRUE, scale = 1), breaks = seq(0, 60, 10)) +
+  labs(x = 'Loan Status', y = 'Percentage of Clients with Loans', title = "Risk Accounts based on Loan Status", subtitle = paste("Total loans granted:", sum(loan_details_status$N))) +
+  guides(fill = FALSE) +
+  scale_fill_manual(values = qua_scale_seven) +
+  coord_flip()
+```
+
+Although we have almost a 60% of our clients we can consider good "payers", the defaulting rate among our clients with negative balance (clients with running contract that they are in red and finished unpayed contracts) is schockingly high: 11%.
+
+Let´s see how it looks per age group.
+
+```{r}
+loan_details_age_group <- loan_details_dataset %>% 
+  group_by(age_group, loan_status) %>%
+  summarize(N = n()) %>%
+  mutate(freq = N / sum(N), pct = round((freq*100), 0))
+
+loan_details_age_arranged <- loan_details_age_group %>% 
+  arrange(pct) %>% 
+  mutate(loan_status = factor(loan_status, levels = loan_status))
+loan_details_age_arranged 
+```
+
+```{r}
+p <- ggplot(loan_details_age_arranged, aes(x = loan_status, y = pct, fill = age_group))
+p +
+  geom_col(position = "dodge2") +
+  scale_y_continuous(labels = scales::percent_format(accuracy = TRUE, scale = 1), breaks = seq(0, 60, 10)) +
+  labs(x = 'Loan Status', y = "Percentage of Clients with Loans", title = "Risk Accounts based on Loan Status per Age Group") +
+  geom_text(aes(x = loan_status, label = pct), position = position_dodge(width = 0.9), hjust = -0.40, size = rel(3)) +
+  theme(legend.position = "right") +
+  scale_fill_manual(name = "Age Group", values = qua_scale_seven) +
+  coord_flip() 
+```
+
+Regarding to the variable age, middle-age and older clients are our best payers. Younger clients are on the other hand less willing to take out a loan, but when they get one, they are, like their old ones, good payers too. With better conditions (favourable time and term loans) they could be maybe an ideal target for this product.
+
+Lets get now a big picture of loans. We want to summarize some relevant statistic information (median, quartiles, outliers) grouped by loan status.
+
+```{r}
+p <- ggplot(loan_details_dataset, aes(x = loan_details_dataset$loan_status, y = loan_details_dataset$loan_amount))
+p +
+  geom_boxplot(fill = "#85CFE6") +
+  labs(x = 'Loan Status', y = "Credit Amount (Czech Crowns)", title = "Summary based on Loan Status") +
+  coord_flip()
+```
+
+As we can see, the current clients with a running loan that they are in red have in general bigger loans than the ones they are up to day (with some exceptions; see outliers). Maybe we can review the conditions of those loans or offer a new ones to make our relation with these clients stronger and long-lasting.
+
+The next question we want to answer is about the loan terms that our clients requested.
+
+```{r}
+loan_details_term <- loan_details_dataset %>% 
+  group_by(duration, loan_status) %>%
+  summarize(N = n()) %>%
+  mutate(freq = N / sum(N), pct = round((freq*100), 0))
+loan_details_term
+```
+
+The figures above show that our clients with loans are equally distributed per each loan term period. Next, we 
+
+```{r}
+p <- ggplot(loan_details_term, aes(x = duration, y = pct, fill = str_wrap(loan_status, 18)))
+p +
+  geom_col(position = "dodge2") +
+  scale_x_continuous(breaks = c(12, 24, 36, 48, 60)) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = TRUE, scale = 1), breaks = seq(0, 100, 15)) +
+  labs(x = 'Loan Term (months)', y = "Percentage of Clients with Loans", title = "Percentage of Clients with Loan within each Loan Term Period (12-60 months)") +
+  theme(legend.position = "top") +
+  scale_fill_manual(name = "Loan Status", values = qua_scale_four_pos_neg)
+```
+
+We are focusing now on the variable time. We want to know the timeline since a customer opened an account and got a loan.
+
+```{r}
+p <- ggplot(loan_details_dataset, aes(x = lapse_time_months))
+p +
+  geom_density() +
+  scale_y_continuous(labels = scales::percent_format(accuracy = TRUE, scale = 1000)) +
+  scale_x_continuous(breaks = seq(3, 23, 2)) +
+  labs(x = "Months until Loan granted", y = "Percentage of Clients with Loan", fill='', title = "Loan granting Timeline", subtitle = paste("Mean (black):", round(mean(loan_details_dataset$lapse_time_months)), "months;", "Median (blue)", median(loan_details_dataset$lapse_time_months), "months")) +
+  geom_vline(aes(xintercept = mean(lapse_time_months)),col = 'black', linetype = "dashed", size = 1) +
+  geom_vline(aes(xintercept = median(lapse_time_months)),col = 'blue', linetype = "dashed", size = 1)
+```
+
+We found a distribution that looks like a normal shape and has mean and median around 13 months.
+
+Next we want to find out how many clients have/had the two products we are interested most: card and loan.
+
+```{sql connection=con, output.var="count_card_loan_clients"}
+SELECT DISTINCT
+  CASE
+    WHEN status ='A' THEN 'finished, no problems'
+    WHEN status ='B' THEN 'finished, loan not payed'
+    WHEN status ='C' THEN 'running contract, OK so far'
+    WHEN status ='D' THEN 'running contract, client in debt'
+    END as "loan_status",
+        CASE
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 25) THEN '<25'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 35) THEN '26-35'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 45) THEN '36-45'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 55) THEN '46-55'
+        ELSE '55-65'
+        END as age_group,
+COUNT(*)
+FROM loan
+JOIN account ON loan.account_id=account.account_id
+JOIN disp ON account.account_id=disp.account_id
+JOIN client ON disp.client_id=client.client_id
+JOIN card ON disp.disp_id=card.disp_id
+WHERE disp.type = 'OWNER'
+GROUP BY 
+  CASE
+    WHEN status ='A' THEN 'finished, no problems'
+    WHEN status ='B' THEN 'finished, loan not payed'
+    WHEN status ='C' THEN 'running contract, OK so far'
+    WHEN status ='D' THEN 'running contract, client in debt'
+    END,
+CASE
+  WHEN (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 25) THEN '<25'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 35) THEN '26-35'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 45) THEN '36-45'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 55) THEN '46-55'
+        ELSE '55-65'
+  END
+```
+
+```{r}
+head(count_card_loan_clients)
+```
+
+```{r}
+sum(count_card_loan_clients$count)
+```
+
+As we can see, just 170 from our 3631 "owner" clients have/had both services. That means that there is a lot of potential for our cross-selling campaign. Let's check out how look like the loan status from clients that at the same time are card owners.
+
+```{r}
+count_card_loan_clients %>% 
+  treemap(
+        index = c("loan_status"),
+        vSize = "count",
+        palette = qua_scale_four_pos_neg,                       
+        title = "Clients with Loan and Card",                     
+        fontsize.title = 12 
+        )
+```
+
+And how look like the picture per age group?
+
+```{sql connection=con, output.var="loan_card_details_dataset"}
+SELECT DISTINCT
+  loan_id,
+  loan.account_id,
+  loan.date as loan_date,
+  amount as loan_amount,
+  duration,
+  payments as monthly_payment,
+  card.disp_id,
+  card.issued,
+  CASE
+    WHEN status ='A' THEN 'finished, no problems'
+    WHEN status ='B' THEN 'finished, loan not payed'
+    WHEN status ='C' THEN 'running contract, OK so far'
+    WHEN status ='D' THEN 'running contract, client in debt'
+    END as "loan_status",
+  CASE
+      WHEN (
+            CASE
+              WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+              ELSE (981231-client.birth_number)/10000 
+            END  <= 25) THEN '<25'
+      WHEN (
+            CASE
+              WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+              ELSE (981231-client.birth_number)/10000 
+            END  <= 25) THEN '25-35'
+      WHEN (
+            CASE
+              WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+              ELSE (981231-client.birth_number)/10000 
+            END  <= 35) THEN '36-45'
+      WHEN (
+            CASE
+              WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+              ELSE (981231-client.birth_number)/10000 
+            END  <= 45) THEN '46-55'
+    ELSE '56-65'
+      END as age_group
+FROM loan
+JOIN account ON loan.account_id=account.account_id
+JOIN disp ON account.account_id=disp.account_id
+JOIN client ON disp.client_id=client.client_id
+JOIN card ON disp.disp_id=card.disp_id
+WHERE disp.type = 'OWNER'
+ORDER BY loan_amount desc
+```
+
+```{r}
+head(loan_card_details_dataset)
+```
+
+```{r}
+loan_card_details_age_group <- loan_card_details_dataset %>% 
+  group_by(age_group, loan_status) %>%
+  summarize(N = n()) %>%
+  mutate(freq = N / sum(N), pct = round((freq*100), 0))
+
+loan_card_details_age_group_arranged <- loan_card_details_age_group %>%
+  arrange(pct) %>%
+  mutate(loan_status = factor(loan_status, levels = loan_status))
+loan_card_details_age_group_arranged
+```
+
+```{r}
+p <- ggplot(loan_card_details_age_group_arranged, aes(x = loan_status, y = pct, fill = age_group))
+p +
+  geom_col(position = "dodge2") +
+  scale_y_continuous(labels = scales::percent_format(accuracy = TRUE, scale = 1), breaks = seq(0, 60, 10)) +
+  labs(x = 'Loan Status', y = "Percentage of Clients with Loan and Credit Card", title = "Clients with Loan and Card (per Age Group)") +
+  geom_text(aes(x = loan_status, label = pct), position = position_dodge(width = 0.9), hjust = -0.40, size = rel(3)) +
+  theme(legend.position = "top") +
+  scale_fill_manual(name = "Age Group", values = qua_scale_seven) +
+  coord_flip() 
+```
+
+```{r}
+p <- ggplot(loan_card_details_dataset, aes(x = loan_status, y = loan_amount))
+p +
+  geom_boxplot(fill = "#85CFE6") +
+  labs(x = "Loan Status", y = "Credit Amount (Czech crowns)", title = "Summary Clients with Loan and Card") +
+  coord_flip()
+```
+
+## Order details {-}
+
+In addition to cards and loans we want to look at the standing orders that our clients have set.
+
+```{sql connection=con, output.var='orders_details_dataset'}
+SELECT DISTINCT
+  account.account_id,
+  orders.orders_id,
+  orders.amount,
+  CASE
+    WHEN k_symbol = 'POJISTNE' THEN 'insurance payment'
+    WHEN k_symbol = 'SIPO' THEN 'household'
+    WHEN k_symbol = 'LEASING' THEN 'leasing'
+    WHEN k_symbol = 'UVER' THEN 'loan payment'
+    ELSE 'other'
+  END as payment_category,
+        CASE
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 25) THEN '<25'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 35) THEN '26-35'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 45) THEN '36-45'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 55) THEN '46-55'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 65) THEN '56-65'
+        ELSE '65+'
+        END as age_group
+FROM orders
+JOIN account ON orders.account_id=account.account_id
+JOIN disp ON account.account_id=disp.account_id
+JOIN client ON disp.client_id=client.client_id
+WHERE disp.type = 'OWNER'
+GROUP BY account.account_id, orders.orders_id, age_group
+```
+
+```{r}
+head(orders_details_dataset)
+```
+
+We want to know how many owners have standing orders.
+
+```{sql connection=con, output.var='count_accounts'}
+SELECT 
+  COUNT(DISTINCT account.account_id) as total_accounts,
+  COUNT(DISTINCT orders.account_id) as accounts_with_orders
+FROM account
+LEFT JOIN orders ON orders.account_id = account.account_id
+```
+
+```{r}
+pct_accounts_with_orders <-  count_accounts %>% 
+  mutate(freq = accounts_with_orders / sum(total_accounts), pct = round((freq*100), 0))
+pct_accounts_with_orders
+```
+
+And how the different orders categories are distributed.
+
+```{sql connection=con, output.var='count_orders_category'}
+SELECT
+  CASE
+    WHEN k_symbol = 'POJISTNE' THEN 'insurance payment'
+    WHEN k_symbol = 'SIPO' THEN 'household'
+    WHEN k_symbol = 'LEASING' THEN 'leasing'
+    WHEN k_symbol = 'UVER' THEN 'loan payment'
+    ELSE 'other'
+  END as payment_category,
+COUNT(*)
+FROM orders
+GROUP BY 
+  CASE
+    WHEN k_symbol = 'POJISTNE' THEN 'insurance payment'
+    WHEN k_symbol = 'SIPO' THEN 'household'
+    WHEN k_symbol = 'LEASING' THEN 'leasing'
+    WHEN k_symbol = 'UVER' THEN 'loan payment'
+    ELSE 'other'
+  END
+```
+
+```{r}
+head(count_orders_category)
+```
+
+```{r}
+sum(count_orders_category$count)
+```
+
+```{r}
+count_orders_category %>% 
+  treemap(
+        index="payment_category",
+        vSize="count",
+        palette=qua_scale_seven,                       
+        title="Orders Categories Distribution",                     
+        fontsize.title=12 
+        )
+```
+
+The plot show us crystal clear that the most common standing orders are the ones put aside for household issues (3502). Most likely this amount is devoted to pay mortgages. 
+
+How does the order picture look like per age group?
+
+```{sql connection=con, output.var='count_orders_accounts_age_group'}
+SELECT DISTINCT
+  CASE
+    WHEN k_symbol = 'POJISTNE' THEN 'insurance payment'
+    WHEN k_symbol = 'SIPO' THEN 'household'
+    WHEN k_symbol = 'LEASING' THEN 'leasing'
+    WHEN k_symbol = 'UVER' THEN 'loan payment'
+    ELSE 'other'
+  END as payment_category,
+        CASE
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 25) THEN '<25'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 35) THEN '26-35'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 45) THEN '36-45'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 55) THEN '46-55'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 65) THEN '56-65'
+        ELSE '65+'
+        END as age_group,
+COUNT(*)
+FROM orders
+JOIN account ON orders.account_id=account.account_id
+JOIN disp ON account.account_id=disp.account_id
+JOIN client ON disp.client_id=client.client_id
+WHERE disp.type = 'OWNER'
+GROUP BY 
+  CASE
+    WHEN k_symbol = 'POJISTNE' THEN 'insurance payment'
+    WHEN k_symbol = 'SIPO' THEN 'household'
+    WHEN k_symbol = 'LEASING' THEN 'leasing'
+    WHEN k_symbol = 'UVER' THEN 'loan payment'
+    ELSE 'other'
+  END,
+        CASE
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 25) THEN '<25'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 35) THEN '26-35'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 45) THEN '36-45'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 55) THEN '46-55'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 65) THEN '56-65'
+        ELSE '65+'
+  END
+```
+
+```{r}
+head(count_orders_accounts_age_group)
+```
+
+```{r}
+sum(count_orders_accounts_age_group$count)
+```
+
+```{r}
+p <- ggplot(orders_details_dataset, aes(x = payment_category, fill = age_group))
+p +
+  geom_bar(position = "dodge2", aes(y = ..prop.., group = age_group)) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = TRUE, scale = 100)) +
+  labs(x = "Order Concept", y = "Percentage of Clients with Order", fill='', title = "Orders Category (per Age Group)", subtitle = paste("Total accounts:", pct_accounts_with_orders$total_accounts, ";", "Accounts with orders:", pct_accounts_with_orders$accounts_with_orders)) +
+  theme(legend.position = "right") +
+  scale_fill_manual(name = "Age Group", values = qua_scale_seven)
+```
+
+```{r}
+p <- ggplot(orders_details_dataset, aes(x = reorder(payment_category, desc(payment_category)), y = amount))
+p +
+  geom_boxplot(fill = "#85CFE6") +
+  labs(x = "Order Concept", y = "Order Amount (Czech Crowns)", title = "Summary based on Orders Categories") +
+  coord_flip()
+```
+
+Analysing the orders distribution grouped by age and the summary statistics related to it, our previous hunch about mortgage payments are confirmed. Our clients between 25 and 75 years old are the most common users this service. It turns out that people in the range from 25 to 40 usually get a mortgage for the first time and they can't pay it off until retirement or sometimes later. The median amount of this standing payment orders are relatively high, which it is also a hint that we are dealing with mortgages.
+
+## Balance details {-}
+
+One of the main criteria to accomplish profitable cross-selling banking is looking at the asset of our clients. We want to know what is the total recorded balance of every client in our available data (date: 1998-12-31).
+
+```{sql connection=con, output.var="balance"}
+SELECT 
+   account_id,
+   date,
+   balance
+FROM trans
+WHERE
+   (
+      trans_id
+   )
+   IN
+   (
+      SELECT
+         MAX(trans_id) as last_id 
+      FROM
+         trans
+      GROUP BY account_id
+   )
+ORDER BY account_id
+```
+
+Next, we are looking at the range of our balance distribution to set up properly our grouped bins.
+
+```{r}
+p <- ggplot(balance, aes(x = balance))
+p +
+  geom_line(stat = "density", lwd = 1, color = "#0093BF") +
+  scale_x_continuous(breaks = seq(-40000, 200000, 20000)) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = TRUE, scale = 1000000)) +
+  # theme(legend.position = "right", ) +
+  scale_color_manual(values = "#0093BF") +
+  labs(y = "Density (in percentage format)", x = "Balance Amount (Czech Crowns)", title = "Final Balance Amount Range for All Clients (end 1998)", subtitle = "")
+```
+
+Once we have the final balance as off end 1998 (last date available), we want to use the information related to demographics characteristics of our client to categorize them by age and gender, and group them by balance.
+
+```{sql, connection=con, output.var="balance_dataset"}
+SELECT
+   trans.account_id,
+   trans.date,
+   trans.balance,
+   disp.type as owner_type,
+    CASE
+      WHEN (MOD(client.birth_number / 100, 100) > 50) THEN 'female'
+      ELSE 'male'
+    END as "gender",
+    CASE
+      WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+      ELSE (981231-client.birth_number)/10000 
+     END as "age",
+        CASE
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 25) THEN '<25'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 35) THEN '26-35'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 45) THEN '36-45'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 55) THEN '46-55'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 65) THEN '56-65'
+        ELSE '65+'
+        END as age_group,  
+    CASE
+      WHEN (balance <=0) THEN '<0'
+      WHEN (balance >0 AND balance < 10000) THEN '<10k'
+      WHEN (balance >=10000 AND balance <20000) THEN '10k-20k'
+      WHEN (balance >=20000 AND balance <40000) THEN '20k-40k'
+      WHEN (balance >=40000 AND balance <60000) THEN '40k-60k'
+      WHEN (balance >=60000 AND balance <80000) THEN '60k-80k'
+      WHEN (balance >=80000 AND balance <100000) THEN '80k-100k'
+      WHEN (balance >=10000) THEN 'more 100k'
+    END as balance_category,
+    CASE
+      WHEN trans.k_symbol ='POJISTNE' THEN 'payment insurance'
+      WHEN trans.k_symbol ='SLUZBY' THEN 'payment statement'
+      WHEN trans.k_symbol ='UROK' THEN 'credit interest'
+      WHEN trans.k_symbol ='SANKC. UROK' THEN 'neg interest action'
+      WHEN trans.k_symbol ='SIPO' THEN 'household'
+      WHEN trans.k_symbol ='DUCHOD' THEN 'old-age pension'
+      WHEN trans.k_symbol ='UVER' THEN 'payment loan'
+    ELSE 'NA'
+    END as spend_category
+FROM trans
+JOIN account ON trans.account_id = account.account_id
+JOIN disp ON account.account_id = disp.account_id
+JOIN client ON disp.client_id = client.client_id
+WHERE
+   (
+      trans_id
+   )
+   IN
+   (
+      SELECT
+         MAX(trans_id) as last_id 
+      FROM
+         trans
+      GROUP BY account_id
+   )
+   AND disp.type = 'OWNER'
+ORDER BY account_id
+```
+
+```{r}
+head(balance_dataset)
+```
+
+Let´s see what the final balance tell us about our clients.
+
+```{r}
+p <- ggplot(balance_dataset, aes(x = reorder(balance_category, balance), fill = age_group))
+p +
+  geom_bar(position = "dodge2", aes(y = ..prop.., group = age_group)) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = TRUE, scale = 100)) +
+  labs(x = "Balance Groups in Czech Crowns (k = 1000)", y = "Percentage of Clients", fill='', title = "Final Balance of Accounts per Age Group (date:1998-12-31)") +
+  scale_fill_manual(name = "Age Group", values = qua_scale_seven)
+```
+
+```{r }
+balance_age_group_summarized <- balance_dataset %>% 
+  group_by(balance_category) %>%
+  summarize(N = n()) %>%
+  mutate(freq = N / sum(N), pct = round((freq*100), 0))
+balance_age_group_summarized
+```
+
+Looking at the plot, we can see that the balance range of most clients (62%) is located between 10k and 50k. There is also a significant second cluster of customers (33%) that is located on top of the majority (50k-100k). The portion of clients "in the red" (1%) is not relevant.
+
+### Balance details card {-}
+
+Create an aggregate median function in SQL to use it to see balance development over the time.
+
+```{sql eval=FALSE, connection=con, include=FALSE}
+CREATE OR REPLACE FUNCTION _final_median(anyarray) RETURNS float8 AS $$
+  WITH q AS
+  (
+     SELECT val
+     FROM unnest($1) val
+     WHERE VAL IS NOT NULL
+     ORDER BY 1
+  ),
+  cnt AS
+  (
+    SELECT COUNT(*) AS c FROM q
+  )
+  SELECT AVG(val)::float8
+  FROM 
+  (
+    SELECT val FROM q
+    LIMIT  2 - MOD((SELECT c FROM cnt), 2)
+    OFFSET GREATEST(CEIL((SELECT c FROM cnt) / 2.0) - 1,0)  
+  ) q2;
+$$ LANGUAGE SQL IMMUTABLE;
+ 
+CREATE AGGREGATE fmv_median(anyelement) (
+  SFUNC=array_append,
+  STYPE=anyarray,
+  FINALFUNC=_final_median,
+  INITCOND='{}'
+);
+```
+
+With the aid of the timeframe analysis, we can better understand the behaviour of our customers regarding to the products involved in our cross-selling project. Here we are looking at the card development in a twelve months interval (before and after card adquisition).
+
+```{sql connection=con, output.var="balance_interval_card"}
+SELECT
+  new_client.age_group,
+  CASE 
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) THEN '+0'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '1 month' THEN '-1'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '2 month' THEN '-2'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '3 month' THEN '-3'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '4 month' THEN '-4'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '5 month' THEN '-5'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '6 month' THEN '-6'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '7 month' THEN '-7'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '8 month' THEN '-8'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '9 month' THEN '-9'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '10 month' THEN '-10'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '11 month' THEN '-11'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '12 month' THEN '-12'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '1 month' THEN '+1'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '2 month' THEN '+2'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '3 month' THEN '+3'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '4 month' THEN '+4'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '5 month' THEN '+5'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '6 month' THEN '+6'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '7 month' THEN '+7'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '8 month' THEN '+8'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '9 month' THEN '+9'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '10 month' THEN '+10'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '11 month' THEN '+11'
+    ELSE '+12'
+  END as month_interval,
+  avg(trans.balance) as avg_balance,
+  fmv_median(trans.balance) as median_balance
+FROM 
+  (
+    SELECT client.client_id,
+      CASE
+        WHEN (MOD(client.birth_number / 100, 100) > 50) THEN 'female'
+        ELSE 'male'
+      END as gender,
+        CASE
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 25) THEN '<25'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 35) THEN '26-35'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 45) THEN '36-45'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 55) THEN '46-55'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 65) THEN '56-65'
+        ELSE '65+'
+        END as age_group,
+      client.district_id
+FROM client) new_client
+JOIN disp ON new_client.client_id = disp.client_id
+JOIN card ON disp.disp_id = card.disp_id
+JOIN account ON account.account_id = disp.account_id
+JOIN trans ON trans.account_id = account.account_id
+WHERE date_trunc('month', trans.date) >=date_trunc('month', card.issued) - interval '12 month'
+  AND date_trunc('month', trans.date) <=date_trunc('month', card.issued) + interval '12 month'
+GROUP BY new_client.age_group,
+  CASE 
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) THEN '+0'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '1 month' THEN '-1'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '2 month' THEN '-2'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '3 month' THEN '-3'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '4 month' THEN '-4'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '5 month' THEN '-5'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '6 month' THEN '-6'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '7 month' THEN '-7'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '8 month' THEN '-8'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '9 month' THEN '-9'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '10 month' THEN '-10'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '11 month' THEN '-11'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '12 month' THEN '-12'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '1 month' THEN '+1'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '2 month' THEN '+2'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '3 month' THEN '+3'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '4 month' THEN '+4'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '5 month' THEN '+5'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '6 month' THEN '+6'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '7 month' THEN '+7'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '8 month' THEN '+8'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '9 month' THEN '+9'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '10 month' THEN '+10'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '11 month' THEN '+11'
+    ELSE '+12'
+  END
+ORDER BY 1,2
+```
+
+```{r}
+head(balance_interval_card)
+```
+
+```{r}
+# Reorder factors levels to make clearer time development
+level_order <- factor(balance_interval_card$month_interval, levels = c('-12', '-11', '-10','-9', '-8', '-7','-6', '-5', '-4','-3', '-2', '-1', '+0', '+1', '+2', '+3', '+4', '+5', '+6', '+7', '+8', '+9', '+10', '+11', '+12'))
+
+# Plot time development
+p <- ggplot(balance_interval_card, aes(x = level_order, y = median_balance, group = age_group, color = age_group))
+p +
+  geom_line(lwd = 1) +
+  labs(x = "Time Interval (12 months before and after product adquisition)" , y = "Median Balance (Czech Crowns)", fill='', title = "Balance Before and After Card Acquisition per Age Group") +
+  theme(legend.position = "top") +
+  geom_vline(xintercept = 13, alpha = 0.5, colour = "grey30", linetype = "dashed") +
+  scale_color_manual(name ="Age Group", values = qua_scale_seven)
+```
+
+```{r}
+# Reorder factors levels to make clearer time development
+level_order <- factor(balance_interval_card$month_interval, levels = c('-12', '-11', '-10','-9', '-8', '-7','-6', '-5', '-4','-3', '-2', '-1', '+0', '+1', '+2', '+3', '+4', '+5', '+6', '+7', '+8', '+9', '+10', '+11', '+12'))
+
+# Plot time development
+p <- ggplot(balance_interval_card, aes(x = level_order, y = median_balance, group = age_group, color = age_group))
+p +
+  geom_line(lwd = 1) +
+  labs(x = "Time Interval (12 months before and after product adquisition)" , y = "Median Balance (Czech Crowns)", fill='', title = "Balance Before and After Card Acquisition per Age Group") +
+  facet_wrap(~ age_group, scales = "free_x") +
+  theme(legend.position = "none", axis.text.x = element_blank()) +
+  geom_vline(xintercept = 13, alpha = .5, colour = "grey30", linetype = "dashed") +
+  scale_color_manual(values = qua_scale_seven)
+```
+
+Looking at the plot, we found that differences between age groups are remarkable. For instance, median balance for our older customers sinks three months after a credit card adquisition. Unlike for this group, it steadily increases over the whole period for the group between 56-65.
+
+### Balance details loan {-}
+
+Now we want to do the same for our other main product: loans.
+
+```{sql connection=con, output.var="balance_interval_loan"}
+SELECT new_client.age_group,
+  CASE 
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) THEN '+0'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) - interval '1 month' THEN '-1'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) - interval '2 month' THEN '-2'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) - interval '3 month' THEN '-3'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) - interval '4 month' THEN '-4'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) - interval '5 month' THEN '-5'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) - interval '6 month' THEN '-6'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) - interval '7 month' THEN '-7'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) - interval '8 month' THEN '-8'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) - interval '9 month' THEN '-9'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) - interval '10 month' THEN '-10'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) - interval '11 month' THEN '-11'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) - interval '12 month' THEN '-12'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) + interval '1 month' THEN '+1'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) + interval '2 month' THEN '+2'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) + interval '3 month' THEN '+3'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) + interval '4 month' THEN '+4'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) + interval '5 month' THEN '+5'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) + interval '6 month' THEN '+6'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) + interval '7 month' THEN '+7'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) + interval '8 month' THEN '+8'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) + interval '9 month' THEN '+9'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) + interval '10 month' THEN '+10'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) + interval '11 month' THEN '+11'
+    ELSE '+12'
+  END as month_interval,
+  avg(trans.balance) as avg_balance,
+  median(trans.balance) as median_balance
+FROM 
+  (
+    SELECT client.client_id,
+      CASE
+        WHEN (MOD(client.birth_number / 100, 100) > 50) THEN 'female'
+        ELSE 'male'
+      END as gender,
+        CASE
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 25) THEN '<25'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 35) THEN '26-35'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 45) THEN '36-45'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                
+                ELSE (981231-client.birth_number)/10000 
+              END <= 55) THEN '46-55'
+        ELSE '55+'
+        END as age_group,
+      client.district_id
+FROM client) new_client
+JOIN disp ON new_client.client_id = disp.client_id
+JOIN account ON account.account_id = disp.account_id
+JOIN trans ON trans.account_id = account.account_id
+JOIN loan ON loan.account_id = account.account_id
+WHERE date_trunc('month', trans.date) >=date_trunc('month', loan.date) - interval '12 month'
+  AND date_trunc('month', trans.date) <=date_trunc('month', loan.date) + interval '12 month'
+  AND disp.type = 'OWNER'
+GROUP BY new_client.age_group,
+  CASE 
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) THEN '+0'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) - interval '1 month' THEN '-1'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) - interval '2 month' THEN '-2'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) - interval '3 month' THEN '-3'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) - interval '4 month' THEN '-4'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) - interval '5 month' THEN '-5'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) - interval '6 month' THEN '-6'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) - interval '7 month' THEN '-7'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) - interval '8 month' THEN '-8'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) - interval '9 month' THEN '-9'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) - interval '10 month' THEN '-10'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) - interval '11 month' THEN '-11'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) - interval '12 month' THEN '-12'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) + interval '1 month' THEN '+1'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) + interval '2 month' THEN '+2'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) + interval '3 month' THEN '+3'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) + interval '4 month' THEN '+4'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) + interval '5 month' THEN '+5'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) + interval '6 month' THEN '+6'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) + interval '7 month' THEN '+7'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) + interval '8 month' THEN '+8'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) + interval '9 month' THEN '+9'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) + interval '10 month' THEN '+10'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', loan.date) + interval '11 month' THEN '+11'
+    ELSE '+12'
+  END
+ORDER BY 1,2
+```
+
+```{r}
+head(balance_interval_loan)
+```
+
+```{r}
+level_order <- factor(balance_interval_loan$month_interval, levels = c('-12', '-11', '-10','-9', '-8', '-7','-6', '-5', '-4','-3', '-2', '-1', '+0', '+1', '+2', '+3', '+4', '+5', '+6', '+7', '+8', '+9', '+10', '+11', '+12'))
+
+p <- ggplot(balance_interval_loan, aes(x = level_order, y = median_balance, group = age_group, color = age_group))
+p +
+  geom_line(lwd = 1) +
+  #scale_color_manual(values=c("#67000d", "#a50f15", "#ef3b2c", "#fcbba1")) +
+  labs(x = "Time Interval (12 months before and after product adquisition)", y = "Median Balance", fill='', title = "Balance Before and After Loan Acquisition per Age Group") +
+  theme(legend.position = "top") +
+  geom_vline(xintercept = 13, alpha = 0.5, colour = "grey30", linetype = "dashed") +
+  scale_color_manual(name ="Age Group", values = qua_scale_seven)
+```
+
+```{r}
+level_order <- factor(balance_interval_loan$month_interval, levels = c('-12', '-11', '-10','-9', '-8', '-7','-6', '-5', '-4','-3', '-2', '-1', '+0', '+1', '+2', '+3', '+4', '+5', '+6', '+7', '+8', '+9', '+10', '+11', '+12'))
+
+p <- ggplot(balance_interval_loan, aes(x = level_order, y = median_balance, group = age_group, color = age_group))
+p +
+  geom_line(lwd = 1) +
+  labs(x = "Time Interval (12 months before and after product adquisition)", y = "Median Balance (Czech Crowns)", fill='', title = "Balance Before and After Loan Acquisition per Age Group") +
+  theme(legend.position = "top", axis.text.x = element_blank()) +
+  geom_vline(xintercept = 13, alpha = 0.5, colour = "grey30", linetype = "dashed") +
+  facet_wrap(~ age_group, scales = "free_x") +
+  scale_color_manual(values = qua_scale_seven) +
+  theme(legend.position = "none")
+```
+
+As for credit cards, we find here that the picture of the median balance among our different age groups differs. It seems that there is not one clear pattern for all our customers when it comes to loan analysis. Besides our spectrum has been reduced from 6 age groups to 5 (without 56-65). That could be due bank politics or because people over 65 years old don't have the need to purchase loans.
+
+# Hypotheses
+
+Regarding the first product that we are focusing on our Cross-Selling Analysis, credit __cards__, we can see that most clients that can own a credit card (4500 owner clients) don’t have one (3608). Among the clients who don´t have a credit card yet, clients aged between 25 and 75 are the largest age group. That gives us a good opportunity to develop strategies to make credit cards more appealing to this group. Gender seems not to be significant regarding credit card acquisition: women and men are pretty much equally distributed.
+
+We can get some additional details from the card issuing timeline. We can see that many of our customers wait at least 20 months until they either request a card for the first time or the bank offers them one. That could be due to bank policies which are too restrictive and make it difficult for the client to acquire a credit card or to long waiting time periods. We could facilitate credit cards to our customers from the beginning of our business relation, making it easier for them to get this product as soon as possible.
+
+The other main product in which we are interested is __loans__. Loans play a main role in the relation of banks with their customers. On the one hand they are profitable because of bank interest rates, on the other hand they allow them to guarantee a long-term relationship with a customer. The analyzed data showed us that overall the defaulting among our customers is higher as preferable. That means that we could offer new loans to those clients that have already finished paying an existing one. Or we could suggest customers with a running contract to engage a new one or offer an upgrade with same or better conditions.
+
+As for the running contracts which are in debt, the median balance is the highest. This fact shows us that there is still room for improvement in our risk evaluation mechanisms to minimize loss.
+
+The timeline since a customer opened an account and got a loan shows a mean and median of about 12 months. Most clients wait to request a loan between 8 and 18 months. We saw that in general, our clients are good “payers”, so we could offer them, after a rigorous risk evaluation, the possibility of a loan right after they open an account.
+
+When we combine both our products – cards and loans – we noticed that just 170 out of our 4500 owner clients have/had both of services: cards and loans. This suggests a great potential for our cross-selling campaign. For those customers having only one of the two products, we should offer them the missing one.
+
+The largest group of clients with a credit card and a running loan contract is the group between 25 and 50 years old. An upgrade with better conditions in one or all the owned products could fulfill two goals: a stronger long-term relationship and an indirect advertisement campaign that attract new customers.
+
+Standing __orders__ represent another bank service largely used by the customers. An analysis of this service allows us to explore new possibilities to build or keep a long-term relationship with our customers. Our data shows that almost every account has at least one order related to it (3758 out of 4500) and that the most common standing orders (3502) are the ones related to household topics. By analyzing the orders distribution, the summary statistics and the age group of the most common users, we can infer that a large portion of these payments is devoted to pay mortgages. The median amount of this type of standing orders is relatively high, which is also a hint that, among other things, we are dealing with mortgages. We could encourage our customers to extend that service to other billing payments promoting our e-banking service for instance.
+
+To understand the behavior of our clients regarding our products, we must look back in the past. __Balance__ over time for clients with credit cards shows that the median balance among the different age groups varies significantly. While for our youngest group (<25) and the people between 46-65 years old, the median balance remains the same during few months and even increases as the time goes, young adults between 26-45 see how their account balance shrinks a little.
+
+Noteworthy it is that the median balance for customer with cards who are over 65 years sinks dramatically around four months after card purchase. As additional service, we could offer them more support and advice right after the purchase to help them manage this product properly.
+
+When we turn our attention to the development of balance in relation with loans, the first thing we notice is that it is difficult to see the big picture. Before our customers decide to request a loan, the median balance normally fluctuates a lot. As expected, the median balance for all our customers - except for oldest ones that own this kind of product - decreases after a loan purchase. We may want to focus our efforts to offer this product an the early stages of our business relation when the balance of our clients is at the highest point.
+ 
+# Next Steps
+
+SQL queries needed to consolidate one dataset with relevant information about one sample client.
+
+Query 1 out of 4
+
+```{sql connection=con, output.var="consol_client_dataset_01"}
+SELECT 
+    account.account_id,
+    new_client.client_id,
+    new_client.gender,
+    new_client.age,
+    new_client.age_group,
+    disp.type,
+    trans.balance as last_balance,
+    CASE COUNT(card.card_id)
+        WHEN 0 then 'N'
+        ELSE 'Y'
+    END as has_cards,
+    ROUND(CAST((card.issued - account.date) as decimal) / 30)  as cards_lapse_time_months
+
+FROM
+  (
+    SELECT client.client_id,
+    CASE
+      WHEN (MOD(client.birth_number / 100, 100) > 50) THEN 'female'
+      ELSE 'male'
+    END as "gender",
+    CASE
+      WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+      ELSE (981231-client.birth_number)/10000 
+     END as "age",
+        CASE
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 25) THEN '<25'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 35) THEN '26-35'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 45) THEN '36-45'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 55) THEN '46-55'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 65) THEN '56-65'
+        ELSE '65+'
+        END as age_group,
+      client.district_id
+FROM client) new_client
+JOIN disp ON new_client.client_id = disp.client_id
+LEFT JOIN card ON disp.disp_id = card.disp_id
+LEFT JOIN account ON disp.account_id = account.account_id
+JOIN trans ON trans.account_id = account.account_id
+WHERE
+   (
+      trans_id
+   )
+   IN
+   (
+      SELECT
+         MAX(trans_id) as last_id 
+      FROM
+         trans
+      GROUP BY account_id
+   )
+   AND disp.type = 'OWNER'
+   AND new_client.client_id = 76
+GROUP BY 
+account.account_id,
+new_client.client_id,
+new_client.gender,
+new_client.age_group,
+new_client.age,
+disp.type,
+trans.balance,
+ROUND(CAST((card.issued - account.date) as decimal) / 30)
+ORDER BY new_client.client_id
+```
+
+```{r}
+print(consol_client_dataset_01)
+```
+
+Query 2 out of 4
+
+```{sql connection=con, output.var="consol_client_dataset_02"}
+SELECT 
+    account.account_id,
+    new_client.client_id,
+    new_client.gender,
+    new_client.age,
+    new_client.age_group,
+    disp.type,
+    ROUND(CAST((card.issued - account.date) as decimal) / 30)  as cards_lapse_time_months,
+CASE 
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) THEN '+0'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '1 month' THEN '-1'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '2 month' THEN '-2'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '3 month' THEN '-3'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '4 month' THEN '-4'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '5 month' THEN '-5'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '6 month' THEN '-6'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '7 month' THEN '-7'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '8 month' THEN '-8'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '9 month' THEN '-9'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '10 month' THEN '-10'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '11 month' THEN '-11'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '12 month' THEN '-12'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '1 month' THEN '+1'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '2 month' THEN '+2'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '3 month' THEN '+3'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '4 month' THEN '+4'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '5 month' THEN '+5'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '6 month' THEN '+6'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '7 month' THEN '+7'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '8 month' THEN '+8'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '9 month' THEN '+9'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '10 month' THEN '+10'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '11 month' THEN '+11'
+    ELSE '+12'
+  END as month_interval,
+  avg(trans.balance) as avg_balance
+FROM
+  (
+    SELECT client.client_id,
+    CASE
+      WHEN (MOD(client.birth_number / 100, 100) > 50) THEN 'female'
+      ELSE 'male'
+    END as "gender",
+    CASE
+      WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+      ELSE (981231-client.birth_number)/10000 
+     END as "age",
+        CASE
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 25) THEN '<25'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 35) THEN '26-35'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 45) THEN '36-45'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 55) THEN '46-55'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 65) THEN '56-65'
+        ELSE '65+'
+        END as age_group,
+      client.district_id
+FROM client) new_client
+JOIN disp ON new_client.client_id = disp.client_id
+JOIN card ON disp.disp_id = card.disp_id
+JOIN account ON disp.account_id = account.account_id
+JOIN trans ON trans.account_id = account.account_id
+WHERE disp.type = 'OWNER'
+AND new_client.client_id = 76
+GROUP BY
+    account.account_id,
+    new_client.client_id,
+    new_client.gender,
+    new_client.age,
+    new_client.age_group,
+    disp.type,
+    ROUND(CAST((card.issued - account.date) as decimal) / 30),
+  CASE 
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) THEN '+0'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '1 month' THEN '-1'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '2 month' THEN '-2'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '3 month' THEN '-3'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '4 month' THEN '-4'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '5 month' THEN '-5'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '6 month' THEN '-6'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '7 month' THEN '-7'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '8 month' THEN '-8'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '9 month' THEN '-9'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '10 month' THEN '-10'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '11 month' THEN '-11'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) - interval '12 month' THEN '-12'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '1 month' THEN '+1'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '2 month' THEN '+2'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '3 month' THEN '+3'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '4 month' THEN '+4'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '5 month' THEN '+5'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '6 month' THEN '+6'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '7 month' THEN '+7'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '8 month' THEN '+8'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '9 month' THEN '+9'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '10 month' THEN '+10'
+    WHEN date_trunc('month', trans.date) = date_trunc('month', card.issued) + interval '11 month' THEN '+11'
+    ELSE '+12'
+    END
+ORDER BY new_client.client_id
+```
+
+```{r}
+print(consol_client_dataset_02)
+```
+
+```{r}
+consol_client_dataset_02 <- consol_client_dataset_02 %>% 
+  spread(key = month_interval, avg_balance) # Tidy our dataset in more suitable way
+print(consol_client_dataset_02)
+```
+
+Query 3 out of 4
+
+```{sql connection=con, output.var="consol_client_dataset_03"}
+SELECT 
+    account.account_id,
+    new_client.client_id,
+    new_client.gender,
+    new_client.age,
+    new_client.age_group,
+    disp.type,
+    loan.amount,
+    trans.balance as last_balance,
+    CASE COUNT(loan.loan_id)
+        WHEN 0 then 'N'
+        ELSE 'Y'
+    END as has_loans,
+    ROUND(CAST((loan.date - account.date) as decimal) / 30)  as loans_lapse_time_months,
+  CASE
+    WHEN status ='A' THEN 'finished, no problems'
+    WHEN status ='B' THEN 'finished, loan not payed'
+    WHEN status ='C' THEN 'running contract, OK so far'
+    WHEN status ='D' THEN 'running contract, client in debt'
+    END as "loan_status"
+FROM
+  (
+    SELECT client.client_id,
+    CASE
+      WHEN (MOD(client.birth_number / 100, 100) > 50) THEN 'female'
+      ELSE 'male'
+    END as "gender",
+    CASE
+      WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+      ELSE (981231-client.birth_number)/10000 
+     END as "age",
+        CASE
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 25) THEN '<25'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 35) THEN '26-35'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 45) THEN '36-45'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 55) THEN '46-55'
+          WHEN 
+            (
+              CASE
+                WHEN MOD(client.birth_number / 100, 100) > 50 THEN (981231-(client.birth_number-5000))/10000 
+                ELSE (981231-client.birth_number)/10000 
+              END <= 65) THEN '56-65'
+        ELSE '65+'
+        END as age_group,
+      client.district_id
+FROM client) new_client
+JOIN disp ON new_client.client_id = disp.client_id
+LEFT JOIN card ON disp.disp_id = card.disp_id
+LEFT JOIN account ON disp.account_id = account.account_id
+JOIN trans ON trans.account_id = account.account_id
+LEFT JOIN loan ON loan.account_id = account.account_id
+WHERE
+   (
+      trans_id
+   )
+   IN
+   (
+      SELECT
+         MAX(trans_id) as last_id 
+      FROM
+         trans
+      GROUP BY account_id
+   )
+   AND disp.type = 'OWNER'
+   AND new_client.client_id = 76
+GROUP BY 
+account.account_id,
+new_client.client_id,
+new_client.gender,
+new_client.age_group,
+new_client.age,
+disp.type,
+loan.amount,
+loan.status,
+trans.balance,
+ROUND(CAST((loan.date - account.date) as decimal) / 30)
+ORDER BY new_client.client_id
+```
+
+```{r}
+print(consol_client_dataset_03)
+```
+
+Query 4 out of 4
+
+```{sql connection=con, output.var="consol_client_dataset_04"}
+SELECT DISTINCT
+  account.account_id,
+  client.client_id,
+  orders.amount as orders_amount,
+  CASE
+    WHEN k_symbol = 'POJISTNE' THEN 'insurance payment'
+    WHEN k_symbol = 'SIPO' THEN 'household'
+    WHEN k_symbol = 'LEASING' THEN 'leasing'
+    WHEN k_symbol = 'UVER' THEN 'loan payment'
+    ELSE 'other'
+  END as payment_category,
+    CASE COUNT(orders.orders_id)
+    WHEN 0 then 'N'
+    ELSE 'Y'
+    END as has_orders    
+FROM orders
+JOIN account ON orders.account_id=account.account_id
+JOIN disp ON account.account_id=disp.account_id
+JOIN client ON disp.client_id=client.client_id
+WHERE disp.type = 'OWNER'
+AND client.client_id = 76
+GROUP BY account.account_id, orders.orders_id, client.client_id
+ORDER BY account_id
+```
+
+```{r}
+print(consol_client_dataset_04)
+```
+
+```{r}
+consol_client_dataset_04 <- consol_client_dataset_04 %>% 
+  spread(key = payment_category, orders_amount) # Tidy our dataset in more suitable way
+consol_client_dataset_04
+```
+
+A unique dataset is created in R with all relevant data.
+
+```{r}
+# First join
+join_01 <- consol_client_dataset_01 %>% 
+  left_join(consol_client_dataset_02, by = "client_id")
+
+# Second join
+join_02 <- join_01 %>%
+  left_join(consol_client_dataset_03, by = "client_id")
+join_02
+
+# Third join
+join_03 <- join_02 %>%
+  left_join(consol_client_dataset_04, by = "client_id") %>%
+    select(c(
+      account_id.x,
+      client_id,
+      gender.x,
+      age.x,
+      age_group.x,
+      type.x,
+      last_balance.y,
+      has_cards,
+      cards_lapse_time_months.x,
+      "-12",
+      "-11",
+      "-10",
+      "-9",
+      "-8",
+      "-7",
+      "-6",
+      "-5",
+      "-4",
+      "-3",
+      "-2",
+      "-1",
+      "+0",
+      "+1",
+      "+2",
+      "+3",
+      "+4",
+      "+5",
+      "+6",      
+      "+7",
+      "+8",
+      "+9",
+      "+10",      
+      "+11",
+      "+12",
+      "has_loans",
+      "household",
+      "insurance payment",
+      "other",
+      has_orders
+    ))
+```
+
+```{r}
+# Rename columns
+colnames(join_03)
+new_col_names <- c(
+  "account_id",
+  "client_id",
+  "gender",
+  "age",
+  "age_group",
+  "client_type",
+  "last_balance",
+  "has_cards",
+  "cards_lapse_time_months",
+  "avg_balance_month_interval (-12)",
+  "avg_balance_month_interval (-11)",
+  "avg_balance_month_interval (-10)",
+  "avg_balance_month_interval (-9)",
+  "avg_balance_month_interval (-8)",
+  "avg_balance_month_interval (-7)",
+  "avg_balance_month_interval (-6)",
+  "avg_balance_month_interval (-5)",
+  "avg_balance_month_interval (-4)",
+  "avg_balance_month_interval (-3)",
+  "avg_balance_month_interval (-2)",
+  "avg_balance_month_interval (-1)",
+  "avg_balance_month_interval (+0)",
+  "avg_balance_month_interval (+1)",
+  "avg_balance_month_interval (+2)",
+  "avg_balance_month_interval (+3)",
+  "avg_balance_month_interval (+4)",
+  "avg_balance_month_interval (+5)",
+  "avg_balance_month_interval (+6)",
+  "avg_balance_month_interval (+7)",
+  "avg_balance_month_interval (+8)",
+  "avg_balance_month_interval (+9)",
+  "avg_balance_month_interval (+10)",
+  "avg_balance_month_interval (+11)",
+  "avg_balance_month_interval (+12)",
+  "has_loans",
+  "amount_order_household",
+  "amount_order_insurance_payment",
+  "amount_order_other",
+  "has_orders"
+)
+colnames(join_03) <- new_col_names
+join_03
+
+# Rearrange columns
+consol_dataset <- join_03[, c(
+  "account_id",
+  "client_id",
+  "gender",
+  "age",
+  "age_group",
+  "client_type",
+  "last_balance",
+  "has_cards",
+  "cards_lapse_time_months",
+  "avg_balance_month_interval (-12)",
+  "avg_balance_month_interval (-11)",
+  "avg_balance_month_interval (-10)",
+  "avg_balance_month_interval (-9)",
+  "avg_balance_month_interval (-8)",
+  "avg_balance_month_interval (-7)",
+  "avg_balance_month_interval (-6)",
+  "avg_balance_month_interval (-5)",
+  "avg_balance_month_interval (-4)",
+  "avg_balance_month_interval (-3)",
+  "avg_balance_month_interval (-2)",
+  "avg_balance_month_interval (-1)",
+  "avg_balance_month_interval (+0)",
+  "avg_balance_month_interval (+1)",
+  "avg_balance_month_interval (+2)",
+  "avg_balance_month_interval (+3)",
+  "avg_balance_month_interval (+4)",
+  "avg_balance_month_interval (+5)",
+  "avg_balance_month_interval (+6)",
+  "avg_balance_month_interval (+7)",
+  "avg_balance_month_interval (+8)",
+  "avg_balance_month_interval (+9)",
+  "avg_balance_month_interval (+10)",
+  "avg_balance_month_interval (+11)",
+  "avg_balance_month_interval (+12)",
+  "has_loans",
+  "has_orders",
+  "amount_order_household",
+  "amount_order_insurance_payment",
+  "amount_order_other"
+)]
+consol_dataset
+```
+
+And saved as a .Rdata file (output_data folder).
+
+```{r}
+save(consol_dataset, file = "output/sample_client_dataset.Rdata")
+```
+
+### Proposals {-}
+There is still much more information available in our data set to carry on further analysis. From the demographic data (relation __district__) we could classify a sample client even more. Attended to where he/she lives (region and city), geographical economic indicators like the average salary of the region/city and ratio of entrepreneurs and social statistics like unemployment and crime rate, we could draw up an accurate map of our customers that allow us to develop more effective business strategies.
+
+Regarding to __trans__ and __orders__ datasets more useful insights could be extracted. We have already looked at the final balance and balance development from the trans relation. But this dataset includes rich information about, among others, kind, amount, date and recipient of a given transaction. This relation by himself or in combination with others like orders, could be a source of knowledge that help us to identify the target of our cross-selling project.
+
+# Linting
+
+The code in this RMarkdown is linted with the [lintr package](https://github.com/jimhester/lintr), which is based on the  [tidyverse style guide](http://style.tidyverse.org/). 
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, results='hide'}
+lintr::lint("main.Rmd", linters =
+              lintr::with_defaults(
+                commented_code_linter = NULL,
+                trailing_whitespace_linter = NULL
+                )
+            )
+# if you have additional scripts and want them to be linted too, add them here
+# lintr::lint("scripts/my_script.R")
+```
